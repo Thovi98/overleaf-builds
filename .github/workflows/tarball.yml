@@ -1,0 +1,81 @@
+name: Create Overleaf tarball
+
+on:
+  schedule:
+    - cron: '0 21 * * 0'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+    
+      - name: Get latest commit
+        id: commit_short
+        run: |
+          FULL=$(git ls-remote https://github.com/overleaf/overleaf.git HEAD | cut -f1)
+          SHORT=${FULL:0:7}
+          echo "commit_short=$SHORT" >> $GITHUB_OUTPUT
+          
+      - name: Clone Overleaf
+        run: |
+          git clone https://github.com/overleaf/overleaf.git overleaf
+          cd overleaf
+          git checkout ${{ steps.commit_short.outputs.commit_short }}
+
+      - name: Get npm version from package.json
+        id: npm
+        run: |
+          cd overleaf
+          NPM_VERSION=$(jq -r '.engines.npm' package.json)
+          echo "npm_version=$NPM_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install correct npm version
+        run: npm install -g npm@${{ steps.npm.outputs.npm_version }}
+
+      - name: Define version
+        id: version
+        run: |
+          VERSION="$(date +%Y%m%d)-${{ steps.commit_short.outputs.commit_short }}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+      - name: Install npm packages
+        working-directory: overleaf
+        run: |
+          npm install
+
+      - name: Compile web
+        working-directory: overleaf/services/web
+        run: |
+          npm run precompile-pug
+          npm install --include=dev
+          npm run webpack:production
+          npm prune --omit=dev
+
+      - name: Prepare release folder
+        run: |
+          mkdir -p release/services/
+          mkdir -p release/libraries/
+          
+          cp -r overleaf/services/* release/services/
+          cp -r overleaf/libraries/* release/libraries/
+
+      - name: Compress Release
+        run: tar -czf overleaf_${{ steps.version.outputs.version }}.tar.gz release/
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Overleaf ${{ steps.version.outputs.version }}
+          files: overleaf_${{ steps.version.outputs.version }}.tar.gz
+
+        
