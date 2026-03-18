@@ -64,9 +64,11 @@ jobs:
         run: |
           mkdir -p release/services/
           mkdir -p release/libraries/
+          mkdir -p release/node_modules/
           
           cp -r overleaf/services/* release/services/
           cp -r overleaf/libraries/* release/libraries/
+          cp -r overleaf/node_modules/* release/node_modules/
 
       - name: Compress Release
         run: tar -czf overleaf_${{ steps.version.outputs.version }}.tar.gz release/
