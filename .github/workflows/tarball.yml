@@ -41,10 +41,16 @@ jobs:
       - name: Install correct npm version
         run: npm install -g npm@${{ steps.npm.outputs.npm_version }}
 
+      - name: Get commit date
+        id: commit_date
+        run: |
+          COMMIT_DATE="$(git show -s --format=%cd --date=format:%Y%m%d)"
+          echo "commit_date=$COMMIT_DATE" >> $GITHUB_OUTPUT
+        
       - name: Define version
         id: version
         run: |
-          VERSION="$(date +%Y%m%d)-${{ steps.commit_short.outputs.commit_short }}"
+          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit_short.outputs.commit_short }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           
       - name: Install npm packages
@@ -58,6 +64,7 @@ jobs:
           npm run precompile-pug
           npm install --include=dev
           npm run webpack:production
+          npm run lezer-latex:generate
           npm prune --omit=dev
 
       - name: Prepare release folder
