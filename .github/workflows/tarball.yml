@@ -43,6 +43,7 @@ jobs:
 
       - name: Get commit date
         id: commit_date
+        working-directory: overleaf
         run: |
           COMMIT_DATE="$(git log -1 --format=%cd --date=format:%Y%m%d)"
           echo "commit_date=$COMMIT_DATE" >> $GITHUB_OUTPUT
