@@ -12,11 +12,6 @@ jobs:
       contents: write
       
     steps:
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
     
       - name: Get latest commit
         id: commit_short
@@ -31,16 +26,6 @@ jobs:
           cd overleaf
           git checkout ${{ steps.commit_short.outputs.commit_short }}
 
-      - name: Get npm version from package.json
-        id: npm
-        run: |
-          cd overleaf
-          NPM_VERSION=$(jq -r '.engines.npm' package.json)
-          echo "npm_version=$NPM_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Install correct npm version
-        run: npm install -g npm@${{ steps.npm.outputs.npm_version }}
-
       - name: Get commit date
         id: commit_date
         working-directory: overleaf
@@ -53,6 +38,31 @@ jobs:
         run: |
           VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit_short.outputs.commit_short }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if tag already release exists
+        id: check
+        run: |
+          TAG="${{ steps.version.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            exit 0
+          else
+            echo "Tag doesn’t exist yet, continue the build…"
+          fi
+          
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Get npm version from package.json
+        id: npm
+        run: |
+          cd overleaf
+          NPM_VERSION=$(jq -r '.engines.npm' package.json)
+          echo "npm_version=$NPM_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install correct npm version
+        run: npm install -g npm@${{ steps.npm.outputs.npm_version }}
           
       - name: Install npm packages
         working-directory: overleaf
