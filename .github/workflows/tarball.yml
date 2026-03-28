@@ -6,25 +6,25 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      
+    outputs:
+      should_build: ${{ steps.check-version.outputs.should_build }}
+
     steps:
-    
       - name: Get latest commit
-        id: commit_short
+        id: commit
         run: |
           FULL=$(git ls-remote https://github.com/overleaf/overleaf.git HEAD | cut -f1)
           SHORT=${FULL:0:7}
+          echo "commit_full=$FULL" >> $GITHUB_OUTPUT
           echo "commit_short=$SHORT" >> $GITHUB_OUTPUT
           
       - name: Clone Overleaf
         run: |
           git clone https://github.com/overleaf/overleaf.git overleaf
           cd overleaf
-          git checkout ${{ steps.commit_short.outputs.commit_short }}
+          git checkout ${{ steps.commit.outputs.commit_full }}
 
       - name: Get commit date
         id: commit_date
@@ -36,19 +36,31 @@ jobs:
       - name: Define version
         id: version
         run: |
-          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit_short.outputs.commit_short }}"
+          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit.outputs.commit_short }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Check if tag already release exists
-        id: check
+      - name: Check if tag already exists
+        id: check-version
+        shell: bash
         run: |
           TAG="${{ steps.version.outputs.version }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            exit 0
+          if git ls-remote --exit-code --tags origin "$TAG" ; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
           else
-            echo "Tag doesn’t exist yet, continue the build…"
+            echo "should_build=true" >> $GITHUB_OUTPUT
           fi
-          
+        
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:          
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -77,6 +89,17 @@ jobs:
           npm run webpack:production
           npm run lezer-latex:generate
           npm prune --omit=dev
+
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_build == 'true'
+
+    permissions:
+      contents: write
+
+    steps:
 
       - name: Prepare release folder
         run: |
