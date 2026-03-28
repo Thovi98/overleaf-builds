@@ -2,44 +2,39 @@ name: Create Overleaf tarball
 
 on:
   schedule:
-    - cron: '0 21 * * 0'
+    - cron: '0 14 * * 3'
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      
-    steps:
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
+##########################################################################
+# PREPARE
+##########################################################################
+  
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check-version.outputs.should_build }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.commit.outputs.commit_full }}
     
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
       - name: Get latest commit
-        id: commit_short
+        id: commit
         run: |
           FULL=$(git ls-remote https://github.com/overleaf/overleaf.git HEAD | cut -f1)
           SHORT=${FULL:0:7}
+          echo "commit_full=$FULL" >> $GITHUB_OUTPUT
           echo "commit_short=$SHORT" >> $GITHUB_OUTPUT
           
       - name: Clone Overleaf
         run: |
           git clone https://github.com/overleaf/overleaf.git overleaf
           cd overleaf
-          git checkout ${{ steps.commit_short.outputs.commit_short }}
-
-      - name: Get npm version from package.json
-        id: npm
-        run: |
-          cd overleaf
-          NPM_VERSION=$(jq -r '.engines.npm' package.json)
-          echo "npm_version=$NPM_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Install correct npm version
-        run: npm install -g npm@${{ steps.npm.outputs.npm_version }}
+          git checkout ${{ steps.commit.outputs.commit_full }}
 
       - name: Get commit date
         id: commit_date
@@ -51,8 +46,66 @@ jobs:
       - name: Define version
         id: version
         run: |
-          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit_short.outputs.commit_short }}"
+          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit.outputs.commit_short }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if tag already exists
+        id: check-version
+        shell: bash
+        run: |
+          TAG="${{ steps.version.outputs.version }}"
+            # Check in this repo if the tag is already created
+            echo "Tag $TAG already exists → skipping build"
+            if git ls-remote --tags https://github.com/${{ github.repository }} "$TAG" | grep -q "$TAG"; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "Tag $TAG not found → building"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+      # Upload source artefact so we can reuse it in the build step
+      - name: Upload source artifact
+        if: steps.check-version.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: overleaf-source
+          path: overleaf
+          
+##########################################################################
+# BUILD
+##########################################################################
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+      
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+      CI: 1
+
+    steps:
+      # Download the prevous uploaded artifact
+      - name: Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: overleaf-source
+          path: overleaf
+          
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Get npm version from package.json
+        id: npm
+        run: |
+          cd overleaf
+          NPM_VERSION=$(jq -r '.engines.npm' package.json)
+          echo "npm_version=$NPM_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install correct npm version
+        run: npm install -g npm@${{ steps.npm.outputs.npm_version }}
           
       - name: Install npm packages
         working-directory: overleaf
@@ -68,6 +121,31 @@ jobs:
           npm run lezer-latex:generate
           npm prune --omit=dev
 
+      # Upload build artefact so we can reuse it in the release step
+      - name: Upload build artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: overleaf-build
+          path: overleaf
+          
+##########################################################################
+# RELEASE
+##########################################################################
+
+  release:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: overleaf-build
+          path: overleaf
+
       - name: Prepare release folder
         run: |
           mkdir -p release/services/
@@ -75,19 +153,20 @@ jobs:
           mkdir -p release/node_modules/
           mkdir -p release/server-ce/
           
-          cp -r overleaf/services/* release/services/
-          cp -r overleaf/libraries/* release/libraries/
-          cp -r overleaf/node_modules/* release/node_modules/
+          cp -r overleaf/services/* release/services/ 
+          cp -r overleaf/libraries/* release/libraries/ 
+          cp -r overleaf/node_modules/* release/node_modules/ 
           cp -r overleaf/server-ce/* release/server-ce/
-
-      - name: Compress Release
-        run: tar -czf overleaf_${{ steps.version.outputs.version }}.tar.gz release/
+          
+      - name: Compress tarball
+        run: |
+          tar -czf overleaf_${{ needs.prepare.outputs.version }}.tar.gz release/
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: Overleaf ${{ steps.version.outputs.version }}
-          files: overleaf_${{ steps.version.outputs.version }}.tar.gz
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: Overleaf ${{ needs.prepare.outputs.version }}
+          files: overleaf_${{ needs.prepare.outputs.version }}.tar.gz
 
         
