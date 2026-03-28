@@ -110,7 +110,7 @@ jobs:
       - name: Install npm packages
         working-directory: overleaf
         run: |
-          npm install
+          npm install --omit=dev
 
       - name: Compile web
         working-directory: overleaf/services/web
@@ -165,7 +165,7 @@ jobs:
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.prepare.outputs.version }}
+          tag_name: dev-${{ needs.prepare.outputs.version }}
           name: Overleaf ${{ needs.prepare.outputs.version }}
           files: overleaf_${{ needs.prepare.outputs.version }}.tar.gz
 
