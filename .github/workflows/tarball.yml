@@ -55,7 +55,9 @@ jobs:
         run: |
           TAG="${{ steps.version.outputs.version }}"
             # Check in this repo if the tag is already created
+            echo "⏭️ Tag $TAG already exists → skipping build"
             if git ls-remote --tags https://github.com/${{ github.repository }} "$TAG" | grep -q "$TAG"; then
+            echo "🚀 Tag $TAG not found → building"
             echo "should_build=false" >> $GITHUB_OUTPUT
           else
             echo "should_build=true" >> $GITHUB_OUTPUT
