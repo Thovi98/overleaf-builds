@@ -2,7 +2,7 @@ name: Create Overleaf tarball
 
 on:
   schedule:
-    - cron: '0 14 * * 3'
+    - cron: '0 21 * * 0'
   workflow_dispatch:
 
 jobs:
@@ -79,6 +79,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_build == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
       
     env:
       COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
@@ -111,6 +113,7 @@ jobs:
         working-directory: overleaf
         run: |
           npm install
+          npm prune --omit=dev
 
       - name: Compile web
         working-directory: overleaf/services/web
@@ -121,30 +124,9 @@ jobs:
           npm run lezer-latex:generate
           npm prune --omit=dev
 
-      # Upload build artefact so we can reuse it in the release step
-      - name: Upload build artefact
-        uses: actions/upload-artifact@v4
-        with:
-          name: overleaf-build
-          path: overleaf
-          
 ##########################################################################
-# RELEASE
+# PREPARE TARBALL
 ##########################################################################
-
-  release:
-    needs: [prepare, build]
-    if: needs.prepare.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download build
-        uses: actions/download-artifact@v4
-        with:
-          name: overleaf-build
-          path: overleaf
 
       - name: Prepare release folder
         run: |
@@ -157,10 +139,14 @@ jobs:
           cp -r overleaf/libraries/* release/libraries/ 
           cp -r overleaf/node_modules/* release/node_modules/ 
           cp -r overleaf/server-ce/* release/server-ce/
-          
+
       - name: Compress tarball
         run: |
           tar -czf overleaf_${{ needs.prepare.outputs.version }}.tar.gz release/
+
+##########################################################################
+# RELEASE
+##########################################################################
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
@@ -168,5 +154,4 @@ jobs:
           tag_name: ${{ needs.prepare.outputs.version }}
           name: Overleaf ${{ needs.prepare.outputs.version }}
           files: overleaf_${{ needs.prepare.outputs.version }}.tar.gz
-
         
