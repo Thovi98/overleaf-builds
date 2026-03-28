@@ -6,10 +6,20 @@ on:
   workflow_dispatch:
 
 jobs:
+
+##########################################################################
+# PREPARE
+##########################################################################
+  
   prepare:
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.check-version.outputs.should_build }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.commit.outputs.commit_full }}
+    
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Get latest commit
@@ -44,23 +54,40 @@ jobs:
         shell: bash
         run: |
           TAG="${{ steps.version.outputs.version }}"
-          if git ls-remote --exit-code --tags origin "$TAG" ; then
+          if gh release view "$TAG" >/dev/null 2>&1; then
             echo "should_build=false" >> $GITHUB_OUTPUT
           else
             echo "should_build=true" >> $GITHUB_OUTPUT
           fi
-        
+
+      # Upload source artefact so we can reuse it in the build step
+      - name: Upload source artifact
+        if: steps.check-version.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: overleaf-source
+          path: overleaf
+          
+##########################################################################
+# BUILD
+##########################################################################
+
   build:
     needs: prepare
     if: needs.prepare.outputs.should_build == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
       
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+      CI: 1
 
-    steps:          
+    steps:
+      # Download the prevous uploaded artifact
+      - name: Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: overleaf-source
+          
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -90,16 +117,29 @@ jobs:
           npm run lezer-latex:generate
           npm prune --omit=dev
 
+      # Upload build artefact so we can reuse it in the release step
+      - name: Upload build artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: overleaf-build
+          path: overleaf
+          
+##########################################################################
+# RELEASE
+##########################################################################
 
   release:
-    runs-on: ubuntu-latest
     needs: [prepare, build]
     if: needs.prepare.outputs.should_build == 'true'
-
+    runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: overleaf-build
 
       - name: Prepare release folder
         run: |
@@ -108,19 +148,20 @@ jobs:
           mkdir -p release/node_modules/
           mkdir -p release/server-ce/
           
-          cp -r overleaf/services/* release/services/
-          cp -r overleaf/libraries/* release/libraries/
-          cp -r overleaf/node_modules/* release/node_modules/
-          cp -r overleaf/server-ce/* release/server-ce/
-
-      - name: Compress Release
-        run: tar -czf overleaf_${{ steps.version.outputs.version }}.tar.gz release/
+          rsync -a overleaf/services/ release/services/
+          rsync -a overleaf/libraries/ release/libraries/
+          rsync -a overleaf/node_modules/ release/node_modules/
+          rsync -a overleaf/server-ce/ release/server-ce/
+          
+      - name: Compress tarball
+        run: |
+          tar -czf overleaf_${{ needs.prepare.outputs.version }}.tar.gz release/
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: Overleaf ${{ steps.version.outputs.version }}
-          files: overleaf_${{ steps.version.outputs.version }}.tar.gz
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: Overleaf ${{ needs.prepare.outputs.version }}
+          files: overleaf_${{ needs.prepare.outputs.version }}.tar.gz
 
         
