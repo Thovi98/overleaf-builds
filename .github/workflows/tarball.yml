@@ -153,10 +153,10 @@ jobs:
           mkdir -p release/node_modules/
           mkdir -p release/server-ce/
           
-          rsync -a overleaf/services/ release/services/
-          rsync -a overleaf/libraries/ release/libraries/
-          rsync -a overleaf/node_modules/ release/node_modules/
-          rsync -a overleaf/server-ce/ release/server-ce/
+          cp -r overleaf/services/* release/services/ 
+          cp -r overleaf/libraries/* release/libraries/ 
+          cp -r overleaf/node_modules/* release/node_modules/ 
+          cp -r overleaf/server-ce/* release/server-ce/
           
       - name: Compress tarball
         run: |
