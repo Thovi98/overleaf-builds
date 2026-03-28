@@ -54,7 +54,8 @@ jobs:
         shell: bash
         run: |
           TAG="${{ steps.version.outputs.version }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Check in this repo if the tag is already created
+            if git ls-remote --tags https://github.com/${{ github.repository }} "$TAG" | grep -q "$TAG"; then
             echo "should_build=false" >> $GITHUB_OUTPUT
           else
             echo "should_build=true" >> $GITHUB_OUTPUT
@@ -141,6 +142,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: overleaf-build
+          path: overleaf
 
       - name: Prepare release folder
         run: |
