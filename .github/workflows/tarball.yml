@@ -53,7 +53,7 @@ jobs:
         id: check-version
         shell: bash
         run: |
-          TAG="${{ steps.version.outputs.version }}"
+          TAG="dev-${{ steps.version.outputs.version }}"
             # Check in this repo if the tag is already created
             echo "Tag $TAG already exists → skipping build"
             if git ls-remote --tags https://github.com/${{ github.repository }} "$TAG" | grep -q "$TAG"; then
