@@ -110,7 +110,8 @@ jobs:
       - name: Install npm packages
         working-directory: overleaf
         run: |
-          npm install --omit=dev
+          npm install
+          npm prune --omit=dev
 
       - name: Compile web
         working-directory: overleaf/services/web
@@ -120,6 +121,26 @@ jobs:
           npm run webpack:production
           npm run lezer-latex:generate
           npm prune --omit=dev
+
+##########################################################################
+# PREPARE TARBALL
+##########################################################################
+
+      - name: Prepare release folder
+        run: |
+          mkdir -p release/services/
+          mkdir -p release/libraries/
+          mkdir -p release/node_modules/
+          mkdir -p release/server-ce/
+          
+          cp -r overleaf/services/* release/services/ 
+          cp -r overleaf/libraries/* release/libraries/ 
+          cp -r overleaf/node_modules/* release/node_modules/ 
+          cp -r overleaf/server-ce/* release/server-ce/
+
+      - name: Compress tarball
+        run: |
+          tar -czf overleaf_${{ needs.prepare.outputs.version }}.tar.gz release/
 
       # Upload build artefact so we can reuse it in the release step
       - name: Upload build artefact
@@ -145,22 +166,6 @@ jobs:
         with:
           name: overleaf-build
           path: overleaf
-
-      - name: Prepare release folder
-        run: |
-          mkdir -p release/services/
-          mkdir -p release/libraries/
-          mkdir -p release/node_modules/
-          mkdir -p release/server-ce/
-          
-          cp -r overleaf/services/* release/services/ 
-          cp -r overleaf/libraries/* release/libraries/ 
-          cp -r overleaf/node_modules/* release/node_modules/ 
-          cp -r overleaf/server-ce/* release/server-ce/
-          
-      - name: Compress tarball
-        run: |
-          tar -czf overleaf_${{ needs.prepare.outputs.version }}.tar.gz release/
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
