@@ -104,10 +104,10 @@ jobs:
         run: corepack enable
           
       - name: Install & compile via genScript.js
-        working-directory: overleaf/server-ce
+        working-directory: overleaf
         run: |
-          node genScript install | bash
-          node genScript compile | bash
+          node server-ce/genScript install | bash
+          node server-ce/genScript compile | bash
 
 ##########################################################################
 # PREPARE TARBALL
