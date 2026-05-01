@@ -93,36 +93,29 @@ jobs:
         with:
           name: overleaf-source
           path: overleaf
-          
+
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
           node-version: 22
+          cache: yarn
 
-      - name: Get npm version from package.json
-        id: npm
-        run: |
-          cd overleaf
-          NPM_VERSION=$(jq -r '.engines.npm' package.json)
-          echo "npm_version=$NPM_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Install correct npm version
-        run: npm install -g npm@${{ steps.npm.outputs.npm_version }}
+      - name: Enable Corepack
+        run: corepack enable
           
-      - name: Install npm packages
+      - name: Install dependencies
         working-directory: overleaf
         run: |
-          npm install
-          npm prune --omit=dev
+          yarn workspaces focus --all --production
 
       - name: Compile web
         working-directory: overleaf/services/web
         run: |
-          npm run precompile-pug
-          npm install --include=dev
-          npm run webpack:production
-          npm run lezer-latex:generate
-          npm prune --omit=dev
+          yarn run precompile-pug
+          yarn install
+          yarn run webpack:production
+          yarn run lezer-latex:generate
+          yarn workspaces focus --all --production
 
 ##########################################################################
 # PREPARE TARBALL
