@@ -103,19 +103,11 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
           
-      - name: Install dependencies
-        working-directory: overleaf
+      - name: Install & compile via genScript.js
+        working-directory: overleaf/server-ce
         run: |
-          yarn workspaces focus --all --production
-
-      - name: Compile web
-        working-directory: overleaf/services/web
-        run: |
-          yarn run precompile-pug
-          yarn install
-          yarn run webpack:production
-          yarn run lezer-latex:generate
-          yarn workspaces focus --all --production
+          node genScript install | bash
+          node genScript compile | bash
 
 ##########################################################################
 # PREPARE TARBALL
