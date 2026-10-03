@@ -13,7 +13,7 @@ on:
         default: "amd64,arm64"
 
   schedule:
-    - cron: '0 15 * * 5'
+    - cron: "0 15 * * 5"
 
 
 jobs:
@@ -26,12 +26,12 @@ jobs:
     runs-on: ubuntu-latest
 
     outputs:
-      commit:       ${{ steps.commit.outputs.commit }}
+      commit: ${{ steps.commit.outputs.commit }}
       short_commit: ${{ steps.commit.outputs.short_commit }}
-      commit_date:  ${{ steps.commit_date.outputs.commit_date }}
-      version:      ${{ steps.version.outputs.version }}
+      commit_date: ${{ steps.commit_date.outputs.commit_date }}
+      version: ${{ steps.version.outputs.version }}
       should_build: ${{ steps.check-version.outputs.should_build }}
-      matrix_arch:  ${{ steps.matrix.outputs.matrix_arch }}
+      matrix_arch: ${{ steps.matrix.outputs.matrix_arch }}
 
     steps:
 
@@ -307,12 +307,17 @@ jobs:
           echo "Yarn configuration"
           echo "========================================"
 
-          echo "nodeLinker:"
-          yarn config get nodeLinker
+          NODE_LINKER=$(yarn config get nodeLinker)
+          ENABLE_GLOBAL_CACHE=$(yarn config get enableGlobalCache)
 
-          echo
-          echo "enableGlobalCache:"
-          yarn config get enableGlobalCache
+          echo "nodeLinker:       $NODE_LINKER"
+          echo "enableGlobalCache: $ENABLE_GLOBAL_CACHE"
+
+          if [ "$NODE_LINKER" != "pnp" ]; then
+            echo "ERROR: expected nodeLinker=pnp"
+            exit 1
+          fi
+
 
           echo
           echo "Yarn version:"
@@ -346,9 +351,49 @@ jobs:
       - name: Install Overleaf dependencies
         working-directory: overleaf
         run: |
-          set -euo pipefail
+          set -uo pipefail
+
+          echo "========================================"
+          echo "Installing Overleaf dependencies"
+          echo "========================================"
 
           node server-ce/genScript install | bash
+          status=$?
+
+          if [ "$status" -ne 0 ]; then
+            echo
+            echo "========================================"
+            echo "Yarn packing logs"
+            echo "========================================"
+
+            FOUND=0
+
+            while IFS= read -r logfile; do
+              FOUND=1
+
+              echo
+              echo "========================================"
+              echo "FILE: $logfile"
+              echo "========================================"
+
+              cat "$logfile"
+            done < <(find /tmp -type f -name 'pack.log' 2>/dev/null)
+
+            if [ "$FOUND" -eq 0 ]; then
+              echo "No pack.log files found."
+
+              echo
+              echo "Recent /tmp contents:"
+              find /tmp \
+                -maxdepth 3 \
+                -type f \
+                -print 2>/dev/null \
+                | sort \
+                | tail -200 || true
+            fi
+          fi
+
+          exit "$status"
 
 
       - name: Compile Overleaf
@@ -363,25 +408,44 @@ jobs:
       # VALIDATE BUILD
       ########################################################################
 
-      - name: Validate PnP after build
+      - name: Validate PnP release
         working-directory: overleaf
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "Post-build PnP validation"
+          echo "PnP release validation"
           echo "========================================"
 
           test -f .pnp.cjs
+          test -f .yarnrc.yml
+          test -f package.json
+          test -f yarn.lock
           test -d .yarn
+
+          if [ -d node_modules ]; then
+            echo
+            echo "ERROR: node_modules exists."
+            echo "This build is expected to use Yarn PnP."
+            exit 1
+          fi
 
           echo
           echo "Yarn:"
           yarn --version
 
           echo
-          echo "PnP loader test:"
+          echo "nodeLinker:"
+          NODE_LINKER="$(yarn config get nodeLinker)"
+          echo "$NODE_LINKER"
 
+          if [ "$NODE_LINKER" != "pnp" ]; then
+            echo "ERROR: expected nodeLinker=pnp"
+            exit 1
+          fi
+
+          echo
+          echo "PnP loader:"
           node -e "
             require('./.pnp.cjs');
             console.log('Yarn PnP loader: OK');
@@ -457,6 +521,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          rm -rf release
           mkdir -p release
 
           # Copy the complete built working tree.
@@ -481,6 +546,13 @@ jobs:
           echo "Testing packaged release"
           echo "========================================"
 
+          test -f .pnp.cjs
+          test -f .yarnrc.yml
+          test -f package.json
+          test -f yarn.lock
+          test -d .yarn
+
+          echo
           echo "Node:"
           node --version
 
@@ -497,7 +569,13 @@ jobs:
 
           echo
           echo "nodeLinker:"
-          yarn config get nodeLinker
+          NODE_LINKER="$(yarn config get nodeLinker)"
+          echo "$NODE_LINKER"
+
+          if [ "$NODE_LINKER" != "pnp" ]; then
+            echo "ERROR: release is not configured for Yarn PnP"
+            exit 1
+          fi
 
 
       ########################################################################
@@ -536,7 +614,6 @@ jobs:
           name: overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
           path: |
             overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz
-            overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz.sha256
           retention-days: 1
 
 
