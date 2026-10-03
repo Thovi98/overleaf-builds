@@ -393,27 +393,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p \
-            release/services \
-            release/libraries \
-            release/node_modules \
-            release/server-ce
+          mkdir -p release
 
-          cp -a \
-            overleaf/services/. \
-            release/services/
+          cp -a overleaf/. release/
 
-          cp -a \
-            overleaf/libraries/. \
-            release/libraries/
+          rm -rf release/.git
+          rm -rf release/.github
 
-          cp -a \
-            overleaf/node_modules/. \
-            release/node_modules/
+          echo "Release size:"
+          du -sh release
 
-          cp -a \
-            overleaf/server-ce/. \
-            release/server-ce/
+          echo "Release contents:"
+          ls -lah release
+
 
       - name: Create tarball
         run: |
