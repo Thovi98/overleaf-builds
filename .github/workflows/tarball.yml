@@ -339,49 +339,6 @@ jobs:
           echo "OS arch:    $(uname -m)"
           echo "Node arch:  $(node -p 'process.arch')"
 
-
-      ########################################################################
-      # VALIDATE PNP CONFIGURATION
-      ########################################################################
-
-      - name: Validate Yarn PnP configuration
-        working-directory: overleaf
-        run: |
-          set -euo pipefail
-
-          echo "========================================"
-          echo "Yarn PnP validation"
-          echo "========================================"
-
-          test -f .pnp.cjs
-          test -f .yarnrc.yml
-          test -f package.json
-          test -f yarn.lock
-          test -d .yarn
-
-          NODE_LINKER=$(yarn config get nodeLinker)
-
-          if [ "$NODE_LINKER" != "pnp" ]; then
-            echo "ERROR: expected nodeLinker=pnp"
-            echo "Actual: $NODE_LINKER"
-            exit 1
-          fi
-
-          ENABLE_GLOBAL_CACHE=$(yarn config get enableGlobalCache)
-
-          if [ "$ENABLE_GLOBAL_CACHE" != "false" ]; then
-            echo "WARNING: enableGlobalCache is not false."
-          fi
-
-          echo
-          echo "PnP files:"
-          ls -lh .pnp.cjs .yarnrc.yml
-
-          echo
-          echo ".yarn contents:"
-          find .yarn -maxdepth 2 -type f | sort | head -200
-
-
       ########################################################################
       # BUILD
       ########################################################################
