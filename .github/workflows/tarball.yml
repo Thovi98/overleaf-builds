@@ -54,6 +54,9 @@ jobs:
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
           echo "short_commit=$SHORT_COMMIT" >> "$GITHUB_OUTPUT"
 
+          echo "Overleaf commit: $COMMIT"
+          echo "Short commit:    $SHORT_COMMIT"
+
       - name: Get commit date
         id: commit_date
         shell: bash
@@ -64,7 +67,11 @@ jobs:
           cd overleaf-meta
 
           git remote add origin https://github.com/overleaf/overleaf.git
-          git fetch --quiet --depth=1 origin "${{ steps.commit.outputs.commit }}"
+
+          git fetch \
+            --quiet \
+            --depth=1 \
+            origin "${{ steps.commit.outputs.commit }}"
 
           COMMIT_DATE=$(git show -s \
             --format='%cd' \
@@ -72,6 +79,8 @@ jobs:
             "${{ steps.commit.outputs.commit }}")
 
           echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
+
+          echo "Commit date: $COMMIT_DATE"
 
       - name: Define version
         id: version
@@ -83,6 +92,8 @@ jobs:
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+          echo "Build version: $VERSION"
+
       - name: Check if release already exists
         id: check-version
         shell: bash
@@ -91,15 +102,21 @@ jobs:
 
           TAG="${{ steps.version.outputs.version }}"
 
-          if git ls-remote --exit-code --tags \
+          if git ls-remote \
+              --exit-code \
+              --tags \
               "https://github.com/${{ github.repository }}.git" \
-              "refs/tags/$TAG" >/dev/null 2>&1; then
+              "refs/tags/$TAG" \
+              >/dev/null 2>&1; then
 
             echo "Release/tag $TAG already exists."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
+
           else
+
             echo "Release/tag $TAG does not exist."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
+
           fi
 
       - name: Build architecture matrix
@@ -203,11 +220,9 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: yarn
-          cache-dependency-path: overleaf/yarn.lock
 
       ########################################################################
-      # YARN / COREPACK
+      # COREPACK / YARN
       ########################################################################
 
       - name: Setup Corepack and Yarn
@@ -217,56 +232,84 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Node:"
+          echo "========================================"
+          echo "Node.js"
+          echo "========================================"
+
           node --version
+          npm --version
 
-          echo "packageManager:"
-          node -p "require('./package.json').packageManager"
+          echo
+          echo "========================================"
+          echo "Overleaf package manager"
+          echo "========================================"
 
-          echo "Enabling Corepack..."
+          PACKAGE_MANAGER=$(node -p \
+            "require('./package.json').packageManager")
+
+          echo "packageManager: $PACKAGE_MANAGER"
+
+          echo
+          echo "========================================"
+          echo "Enable Corepack"
+          echo "========================================"
+
           corepack enable
 
-          echo "Installing project package manager..."
+          echo
+          echo "========================================"
+          echo "Install project package manager"
+          echo "========================================"
+
           corepack install
 
-          echo "Yarn:"
-          yarn --version
-
-          echo "Yarn executable:"
-          command -v yarn
+          echo
+          echo "========================================"
+          echo "Verify Yarn"
+          echo "========================================"
 
           EXPECTED_YARN=$(node -p \
             "require('./package.json').packageManager.replace(/^yarn@/, '')")
 
           ACTUAL_YARN=$(yarn --version)
 
+          YARN_PATH=$(command -v yarn)
+
           echo "Expected Yarn: $EXPECTED_YARN"
           echo "Actual Yarn:   $ACTUAL_YARN"
+          echo "Yarn path:     $YARN_PATH"
 
           if [ "$ACTUAL_YARN" != "$EXPECTED_YARN" ]; then
-            echo "ERROR: wrong Yarn version!"
+            echo
+            echo "ERROR: incorrect Yarn version!"
+            echo "Expected: $EXPECTED_YARN"
+            echo "Actual:   $ACTUAL_YARN"
             exit 1
           fi
 
+          echo
+          echo "Yarn configuration:"
+          yarn config get nodeLinker || true
+
+      ########################################################################
+      # BUILD ENVIRONMENT
+      ########################################################################
+
       - name: Show build environment
+        working-directory: overleaf
         run: |
           set -euo pipefail
 
-          echo "Node:"
-          node --version
+          echo "========================================"
+          echo "Build environment"
+          echo "========================================"
 
-          echo "npm:"
-          npm --version
-
-          echo "Yarn:"
-          cd overleaf
-          yarn --version
-
-          echo "Architecture:"
-          uname -m
-
-          echo "Kernel:"
-          uname -a
+          echo "Node:       $(node --version)"
+          echo "npm:        $(npm --version)"
+          echo "Yarn:       $(yarn --version)"
+          echo "Yarn path:  $(command -v yarn)"
+          echo "OS arch:    $(uname -m)"
+          echo "Node arch:  $(node -p 'process.arch')"
 
       ########################################################################
       # BUILD
@@ -295,11 +338,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "Runner architecture:"
+          echo "========================================"
+          echo "Architecture validation"
+          echo "========================================"
+
+          echo "Runner:"
           uname -m
 
           echo
-          echo "Node architecture:"
+          echo "Node:"
           node -p "process.arch"
 
           echo
@@ -307,7 +354,10 @@ jobs:
 
           find node_modules \
             -type f \
-            \( -name '*.node' -o -perm -111 \) \
+            \( \
+              -name '*.node' \
+              -o -perm -111 \
+            \) \
             -print \
             | head -100 || true
 
@@ -316,11 +366,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "Total:"
           du -sh .
 
+          echo
+          echo "node_modules:"
           du -sh node_modules 2>/dev/null || true
+
+          echo
+          echo "services:"
           du -sh services 2>/dev/null || true
+
+          echo
+          echo "libraries:"
           du -sh libraries 2>/dev/null || true
+
+          echo
+          echo "server-ce:"
           du -sh server-ce 2>/dev/null || true
 
       ########################################################################
@@ -337,16 +399,20 @@ jobs:
             release/node_modules \
             release/server-ce
 
-          cp -a overleaf/services/. \
+          cp -a \
+            overleaf/services/. \
             release/services/
 
-          cp -a overleaf/libraries/. \
+          cp -a \
+            overleaf/libraries/. \
             release/libraries/
 
-          cp -a overleaf/node_modules/. \
+          cp -a \
+            overleaf/node_modules/. \
             release/node_modules/
 
-          cp -a overleaf/server-ce/. \
+          cp -a \
+            overleaf/server-ce/. \
             release/server-ce/
 
       - name: Create tarball
@@ -386,6 +452,7 @@ jobs:
           sha256sum "$TARBALL" \
             > "${TARBALL}.sha256"
 
+          echo "Checksum:"
           cat "${TARBALL}.sha256"
 
       ########################################################################
@@ -428,6 +495,8 @@ jobs:
       - name: List release files
         run: |
           set -euo pipefail
+
+          echo "Release files:"
 
           find artifacts \
             -maxdepth 3 \
