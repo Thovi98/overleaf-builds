@@ -46,7 +46,10 @@ jobs:
           if [ -n "$REQUESTED" ]; then
             COMMIT="$REQUESTED"
           else
-            COMMIT=$(git ls-remote https://github.com/overleaf/overleaf.git HEAD | cut -f1)
+            COMMIT=$(git ls-remote \
+              https://github.com/overleaf/overleaf.git \
+              HEAD \
+              | cut -f1)
           fi
 
           SHORT_COMMIT="${COMMIT:0:7}"
@@ -57,6 +60,7 @@ jobs:
           echo "Overleaf commit: $COMMIT"
           echo "Short commit:    $SHORT_COMMIT"
 
+
       - name: Get commit date
         id: commit_date
         shell: bash
@@ -66,7 +70,8 @@ jobs:
           git init overleaf-meta
           cd overleaf-meta
 
-          git remote add origin https://github.com/overleaf/overleaf.git
+          git remote add origin \
+            https://github.com/overleaf/overleaf.git
 
           git fetch \
             --quiet \
@@ -82,6 +87,7 @@ jobs:
 
           echo "Commit date: $COMMIT_DATE"
 
+
       - name: Define version
         id: version
         shell: bash
@@ -93,6 +99,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
           echo "Build version: $VERSION"
+
 
       - name: Check if release already exists
         id: check-version
@@ -118,6 +125,7 @@ jobs:
             echo "should_build=true" >> "$GITHUB_OUTPUT"
 
           fi
+
 
       - name: Build architecture matrix
         id: matrix
@@ -191,6 +199,7 @@ jobs:
             tar \
             gzip
 
+
       ########################################################################
       # SOURCE
       ########################################################################
@@ -212,6 +221,7 @@ jobs:
           echo "Building Overleaf:"
           git log -1 --oneline
 
+
       ########################################################################
       # NODE
       ########################################################################
@@ -220,6 +230,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
+
 
       ########################################################################
       # COREPACK / YARN
@@ -239,6 +250,7 @@ jobs:
           node --version
           npm --version
 
+
           echo
           echo "========================================"
           echo "Overleaf package manager"
@@ -249,6 +261,7 @@ jobs:
 
           echo "packageManager: $PACKAGE_MANAGER"
 
+
           echo
           echo "========================================"
           echo "Enable Corepack"
@@ -256,12 +269,14 @@ jobs:
 
           corepack enable
 
+
           echo
           echo "========================================"
           echo "Install project package manager"
           echo "========================================"
 
           corepack install
+
 
           echo
           echo "========================================"
@@ -272,7 +287,6 @@ jobs:
             "require('./package.json').packageManager.replace(/^yarn@/, '')")
 
           ACTUAL_YARN=$(yarn --version)
-
           YARN_PATH=$(command -v yarn)
 
           echo "Expected Yarn: $EXPECTED_YARN"
@@ -287,9 +301,23 @@ jobs:
             exit 1
           fi
 
+
           echo
-          echo "Yarn configuration:"
-          yarn config get nodeLinker || true
+          echo "========================================"
+          echo "Yarn configuration"
+          echo "========================================"
+
+          echo "nodeLinker:"
+          yarn config get nodeLinker
+
+          echo
+          echo "enableGlobalCache:"
+          yarn config get enableGlobalCache
+
+          echo
+          echo "Yarn version:"
+          yarn --version
+
 
       ########################################################################
       # BUILD ENVIRONMENT
@@ -311,6 +339,49 @@ jobs:
           echo "OS arch:    $(uname -m)"
           echo "Node arch:  $(node -p 'process.arch')"
 
+
+      ########################################################################
+      # VALIDATE PNP CONFIGURATION
+      ########################################################################
+
+      - name: Validate Yarn PnP configuration
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Yarn PnP validation"
+          echo "========================================"
+
+          test -f .pnp.cjs
+          test -f .yarnrc.yml
+          test -f package.json
+          test -f yarn.lock
+          test -d .yarn
+
+          NODE_LINKER=$(yarn config get nodeLinker)
+
+          if [ "$NODE_LINKER" != "pnp" ]; then
+            echo "ERROR: expected nodeLinker=pnp"
+            echo "Actual: $NODE_LINKER"
+            exit 1
+          fi
+
+          ENABLE_GLOBAL_CACHE=$(yarn config get enableGlobalCache)
+
+          if [ "$ENABLE_GLOBAL_CACHE" != "false" ]; then
+            echo "WARNING: enableGlobalCache is not false."
+          fi
+
+          echo
+          echo "PnP files:"
+          ls -lh .pnp.cjs .yarnrc.yml
+
+          echo
+          echo ".yarn contents:"
+          find .yarn -maxdepth 2 -type f | sort | head -200
+
+
       ########################################################################
       # BUILD
       ########################################################################
@@ -322,6 +393,7 @@ jobs:
 
           node server-ce/genScript install | bash
 
+
       - name: Compile Overleaf
         working-directory: overleaf
         run: |
@@ -329,49 +401,83 @@ jobs:
 
           node server-ce/genScript compile | bash
 
+
       ########################################################################
-      # VALIDATION
+      # VALIDATE BUILD
       ########################################################################
 
-      - name: Validate architecture
+      - name: Validate PnP after build
         working-directory: overleaf
         run: |
           set -euo pipefail
 
           echo "========================================"
-          echo "Architecture validation"
+          echo "Post-build PnP validation"
           echo "========================================"
 
-          echo "Runner:"
-          uname -m
+          test -f .pnp.cjs
+          test -d .yarn
 
           echo
-          echo "Node:"
-          node -p "process.arch"
+          echo "Yarn:"
+          yarn --version
 
           echo
-          echo "Potential native binaries:"
+          echo "PnP loader test:"
 
-          find node_modules \
+          node -e "
+            require('./.pnp.cjs');
+            console.log('Yarn PnP loader: OK');
+          "
+
+
+      ########################################################################
+      # NATIVE ARTIFACTS
+      ########################################################################
+
+      - name: Inspect native artifacts
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Native artifacts"
+          echo "========================================"
+
+          echo "Searching .yarn for native modules/binaries..."
+
+          find .yarn \
             -type f \
             \( \
               -name '*.node' \
+              -o -name '*.so' \
+              -o -name '*.dylib' \
               -o -perm -111 \
             \) \
             -print \
-            | head -100 || true
+            | head -200 || true
+
+
+      ########################################################################
+      # DISK USAGE
+      ########################################################################
 
       - name: Show disk usage
         working-directory: overleaf
         run: |
           set -euo pipefail
 
+          echo "========================================"
+          echo "Disk usage"
+          echo "========================================"
+
+          echo
           echo "Total:"
           du -sh .
 
           echo
-          echo "node_modules:"
-          du -sh node_modules 2>/dev/null || true
+          echo ".yarn:"
+          du -sh .yarn
 
           echo
           echo "services:"
@@ -385,6 +491,7 @@ jobs:
           echo "server-ce:"
           du -sh server-ce 2>/dev/null || true
 
+
       ########################################################################
       # PACKAGE
       ########################################################################
@@ -395,17 +502,50 @@ jobs:
 
           mkdir -p release
 
+          # Copy the complete built working tree.
+          # Yarn PnP requires .yarn + .pnp.cjs + project metadata.
           cp -a overleaf/. release/
 
+          # Never ship GitHub/repository metadata.
           rm -rf release/.git
           rm -rf release/.github
 
-          echo "Release size:"
-          du -sh release
 
-          echo "Release contents:"
-          ls -lah release
+      ########################################################################
+      # TEST RELEASE DIRECTORY
+      ########################################################################
 
+      - name: Test release directory
+        working-directory: release
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Testing packaged release"
+          echo "========================================"
+
+          echo "Node:"
+          node --version
+
+          echo
+          echo "Yarn:"
+          yarn --version
+
+          echo
+          echo "PnP loader:"
+          node -e "
+            require('./.pnp.cjs');
+            console.log('Yarn PnP loader: OK');
+          "
+
+          echo
+          echo "nodeLinker:"
+          yarn config get nodeLinker
+
+
+      ########################################################################
+      # CREATE TARBALL
+      ########################################################################
 
       - name: Create tarball
         run: |
@@ -428,24 +568,6 @@ jobs:
           echo "Created:"
           ls -lh "$TARBALL"
 
-      ########################################################################
-      # CHECKSUM
-      ########################################################################
-
-      - name: Create SHA256 checksum
-        run: |
-          set -euo pipefail
-
-          VERSION="${{ needs.prepare.outputs.version }}"
-          ARCH="${{ matrix.arch }}"
-
-          TARBALL="overleaf-${VERSION}-${ARCH}.tar.gz"
-
-          sha256sum "$TARBALL" \
-            > "${TARBALL}.sha256"
-
-          echo "Checksum:"
-          cat "${TARBALL}.sha256"
 
       ########################################################################
       # ARTIFACT
@@ -484,16 +606,21 @@ jobs:
         with:
           path: artifacts
 
+
       - name: List release files
         run: |
           set -euo pipefail
 
-          echo "Release files:"
+          echo "========================================"
+          echo "Release files"
+          echo "========================================"
 
           find artifacts \
             -maxdepth 3 \
             -type f \
-            -print
+            -print \
+            | sort
+
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -503,4 +630,3 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/**/*.tar.gz
-            artifacts/**/*.sha256
