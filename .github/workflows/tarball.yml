@@ -1,144 +1,369 @@
-name: Create Overleaf tarball
+name: Build Overleaf tarball (multi-arch)
 
 on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Overleaf commit"
+        required: false
+        default: ""
+      arch:
+        description: "CPU architecture (amd64,arm64)"
+        required: true
+        default: "amd64,arm64"
+
   schedule:
     - cron: '0 15 * * 5'
-  workflow_dispatch:
+
 
 jobs:
 
-##########################################################################
-# PREPARE
-##########################################################################
-  
+  ##########################################################################
+  # PREPARE
+  ##########################################################################
+
   prepare:
     runs-on: ubuntu-latest
+
     outputs:
+      commit:       ${{ steps.commit.outputs.commit }}
+      short_commit: ${{ steps.commit.outputs.short_commit }}
+      commit_date:  ${{ steps.commit.outputs.commit_date }}
+      version:      ${{ steps.version.outputs.version }}
       should_build: ${{ steps.check-version.outputs.should_build }}
-      version: ${{ steps.version.outputs.version }}
-      commit: ${{ steps.commit.outputs.commit_full }}
-    
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      matrix_arch:  ${{ steps.matrix.outputs.matrix_arch }}
 
     steps:
+
       - name: Get latest commit
         id: commit
+        shell: bash
         run: |
-          FULL=$(git ls-remote https://github.com/overleaf/overleaf.git HEAD | cut -f1)
-          SHORT=${FULL:0:7}
-          echo "commit_full=$FULL" >> $GITHUB_OUTPUT
-          echo "commit_short=$SHORT" >> $GITHUB_OUTPUT
-          
-      - name: Clone Overleaf
-        run: |
-          git clone https://github.com/overleaf/overleaf.git overleaf
-          cd overleaf
-          git checkout ${{ steps.commit.outputs.commit_full }}
+          set -euo pipefail
+
+          REQUESTED="${{ github.event.inputs.commit }}"
+
+          if [ -n "$REQUESTED" ]; then
+            COMMIT="$REQUESTED"
+          else
+            COMMIT=$(git ls-remote https://github.com/overleaf/overleaf.git HEAD | cut -f1)
+          fi
+
+          SHORT_COMMIT="${COMMIT:0:7}"
+
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "short_commit=$SHORT_COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Get commit date
         id: commit_date
-        working-directory: overleaf
+        shell: bash
         run: |
-          COMMIT_DATE="$(git log -1 --format=%cd --date=format:%Y%m%d)"
-          echo "commit_date=$COMMIT_DATE" >> $GITHUB_OUTPUT
-        
+          set -euo pipefail
+
+          git init overleaf-meta
+          cd overleaf-meta
+
+          git remote add origin https://github.com/overleaf/overleaf.git
+          git fetch --quiet --depth=1 origin "${{ steps.commit.outputs.commit }}"
+
+          COMMIT_DATE=$(git show -s \
+            --format='%cd' \
+            --date=format:%Y%m%d \
+            "${{ steps.commit.outputs.commit }}")
+
+          echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
+
       - name: Define version
         id: version
+        shell: bash
         run: |
-          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit.outputs.commit_short }}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
 
-      - name: Check if tag already exists
+          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit.outputs.short_commit }}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release already exists
         id: check-version
         shell: bash
         run: |
+          set -euo pipefail
+
           TAG="${{ steps.version.outputs.version }}"
-            # Check in this repo if the tag is already created
-            echo "Tag $TAG already exists → skipping build"
-            if git ls-remote --tags https://github.com/${{ github.repository }} "$TAG" | grep -q "$TAG"; then
-            echo "should_build=false" >> $GITHUB_OUTPUT
+
+          if git ls-remote --exit-code --tags \
+              "https://github.com/${{ github.repository }}.git" \
+              "refs/tags/$TAG" >/dev/null 2>&1; then
+
+            echo "Release/tag $TAG already exists."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Tag $TAG not found → building"
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Release/tag $TAG does not exist."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Upload source artefact so we can reuse it in the build step
-      - name: Upload source artifact
+      - name: Build architecture matrix
+        id: matrix
         if: steps.check-version.outputs.should_build == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: overleaf-source
-          path: overleaf
-          include-hidden-files: true
-          
-##########################################################################
-# BUILD
-##########################################################################
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARCH="${{ github.event.inputs.arch }}"
+          else
+            ARCH="amd64,arm64"
+          fi
+
+          MATRIX=$(echo "$ARCH" | jq -R -s -c '
+            split(",")
+            | map(gsub("^\\s+|\\s+$"; ""))
+            | map(select(length > 0))
+          ')
+
+          echo "matrix_arch=$MATRIX" >> "$GITHUB_OUTPUT"
+
+          echo "Architectures: $MATRIX"
+
+
+  ##########################################################################
+  # BUILD
+  ##########################################################################
 
   build:
     needs: prepare
+
     if: needs.prepare.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        arch: ${{ fromJson(needs.prepare.outputs.matrix_arch) }}
+
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+
     permissions:
-      contents: write
-      
+      contents: read
+
     env:
-      COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
       CI: 1
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+      YARN_ENABLE_IMMUTABLE_INSTALLS: "false"
 
     steps:
-      # Download the prevous uploaded artifact
-      - name: Download source
-        uses: actions/download-artifact@v4
-        with:
-          name: overleaf-source
-          path: overleaf
 
-      - name: Setup Node
+      ########################################################################
+      # DEPENDENCIES
+      ########################################################################
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git \
+            curl \
+            ca-certificates \
+            build-essential \
+            python3 \
+            pkg-config \
+            jq \
+            tar \
+            gzip
+
+      ########################################################################
+      # SOURCE
+      ########################################################################
+
+      - name: Checkout Overleaf
+        run: |
+          set -euo pipefail
+
+          git clone \
+            --filter=blob:none \
+            https://github.com/overleaf/overleaf.git \
+            overleaf
+
+          cd overleaf
+
+          git checkout --detach \
+            "${{ needs.prepare.outputs.commit }}"
+
+          echo "Building Overleaf:"
+          git log -1 --oneline
+
+      ########################################################################
+      # NODE
+      ########################################################################
+
+      - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: yarn
+          cache-dependency-path: overleaf/yarn.lock
 
       - name: Enable Corepack
-        run: corepack enable
-          
-      - name: Install & compile via genScript.js
-        working-directory: overleaf
-        env:
-          YARN_ENABLE_IMMUTABLE_INSTALLS: "false"
         run: |
+          set -euo pipefail
+          corepack enable
+
+      - name: Show build environment
+        run: |
+          node --version
+          npm --version
+          yarn --version
+          uname -a
+          uname -m
+
+      ########################################################################
+      # BUILD
+      ########################################################################
+
+      - name: Install Overleaf dependencies
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
           node server-ce/genScript install | bash
+
+      - name: Compile Overleaf
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
           node server-ce/genScript compile | bash
 
-##########################################################################
-# PREPARE TARBALL
-##########################################################################
+      ########################################################################
+      # VALIDATION
+      ########################################################################
 
-      - name: Prepare release folder
+      - name: Validate architecture
+        working-directory: overleaf
         run: |
-          mkdir -p release/services/
-          mkdir -p release/libraries/
-          mkdir -p release/node_modules/
-          mkdir -p release/server-ce/
-          
-          cp -r overleaf/services/* release/services/ 
-          cp -r overleaf/libraries/* release/libraries/ 
-          cp -r overleaf/node_modules/* release/node_modules/ 
-          cp -r overleaf/server-ce/* release/server-ce/
+          set -euo pipefail
 
-      - name: Compress tarball
+          echo "Runner architecture:"
+          uname -m
+
+          echo
+          echo "Potential native binaries:"
+
+          find node_modules \
+            -type f \
+            \( -name '*.node' -o -perm -111 \) \
+            -print \
+            | head -100 || true
+
+      - name: Show disk usage
+        working-directory: overleaf
         run: |
-          tar -czf overleaf_${{ needs.prepare.outputs.version }}.tar.gz release/
+          du -sh .
+          du -sh node_modules 2>/dev/null || true
+          du -sh services 2>/dev/null || true
+          du -sh libraries 2>/dev/null || true
+          du -sh server-ce 2>/dev/null || true
 
-##########################################################################
-# RELEASE
-##########################################################################
+      ########################################################################
+      # PACKAGE
+      ########################################################################
 
-      - name: Publish Release
-        uses: softprops/action-gh-release@v2.6.1
+      - name: Prepare release directory
+        run: |
+          set -euo pipefail
+
+          mkdir -p release/services
+          mkdir -p release/libraries
+          mkdir -p release/node_modules
+          mkdir -p release/server-ce
+
+          cp -a overleaf/services/. \
+            release/services/
+
+          cp -a overleaf/libraries/. \
+            release/libraries/
+
+          cp -a overleaf/node_modules/. \
+            release/node_modules/
+
+          cp -a overleaf/server-ce/. \
+            release/server-ce/
+
+      - name: Create tarball
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ needs.prepare.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+
+          TARBALL="overleaf-${VERSION}-${ARCH}.tar.gz"
+
+          tar \
+            --sort=name \
+            --mtime='UTC 1970-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -czf "$TARBALL" \
+            -C release .
+
+          echo "Created:"
+          ls -lh "$TARBALL"
+
+      ########################################################################
+      # ARTIFACT
+      ########################################################################
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
+          path: |
+            overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz
+            overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz.sha256
+          retention-days: 1
+
+
+  ##########################################################################
+  # RELEASE
+  ##########################################################################
+
+  release:
+    needs:
+      - prepare
+      - build
+
+    if: needs.prepare.outputs.should_build == 'true'
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List release files
+        run: |
+          set -euo pipefail
+
+          find artifacts \
+            -type f \
+            -maxdepth 3 \
+            -print
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.version }}
-          name: Overleaf ${{ needs.prepare.outputs.version }}
-          files: overleaf_${{ needs.prepare.outputs.version }}.tar.gz
-        
+          name: "Overleaf ${{ needs.prepare.outputs.version }}"
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar.gz
