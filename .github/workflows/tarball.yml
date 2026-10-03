@@ -310,7 +310,7 @@ jobs:
           NODE_LINKER=$(yarn config get nodeLinker)
           ENABLE_GLOBAL_CACHE=$(yarn config get enableGlobalCache)
 
-          echo "nodeLinker:       $NODE_LINKER"
+          echo "nodeLinker:        $NODE_LINKER"
           echo "enableGlobalCache: $ENABLE_GLOBAL_CACHE"
 
           if [ "$NODE_LINKER" != "pnp" ]; then
@@ -318,10 +318,67 @@ jobs:
             exit 1
           fi
 
-
           echo
           echo "Yarn version:"
           yarn --version
+
+
+      ########################################################################
+      # ARCHITECTURE-SPECIFIC YARN CACHE
+      #
+      # Keep the Yarn cache for offline operation, but only fetch optional/
+      # native dependencies for the architecture of this tarball.
+      ########################################################################
+
+      - name: Configure target architecture for offline bundle
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
+          ARCH="${{ matrix.arch }}"
+
+          case "$ARCH" in
+            amd64)
+              CPU="x64"
+              ;;
+            arm64)
+              CPU="arm64"
+              ;;
+            *)
+              echo "ERROR: unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+
+          echo "========================================"
+          echo "Offline bundle architecture"
+          echo "========================================"
+
+          echo "Release architecture: $ARCH"
+          echo "Yarn CPU architecture: $CPU"
+          echo "OS:                    linux"
+          echo "libc:                  glibc"
+
+          #
+          # supportedArchitectures is at the end of the Overleaf .yarnrc.yml.
+          # Replace that section with a target-specific configuration.
+          #
+          sed -i '/^supportedArchitectures:/,$d' .yarnrc.yml
+
+          cat >> .yarnrc.yml <<EOF
+
+          supportedArchitectures:
+            cpu:
+              - $CPU
+            libc:
+              - glibc
+            os:
+              - linux
+          EOF
+
+          echo
+          echo "Effective supportedArchitectures:"
+          sed -n '/^supportedArchitectures:/,$p' .yarnrc.yml
 
 
       ########################################################################
@@ -343,6 +400,11 @@ jobs:
           echo "Yarn path:  $(command -v yarn)"
           echo "OS arch:    $(uname -m)"
           echo "Node arch:  $(node -p 'process.arch')"
+
+          echo
+          echo "Yarn supported architectures:"
+          sed -n '/^supportedArchitectures:/,$p' .yarnrc.yml
+
 
       ########################################################################
       # BUILD
@@ -453,6 +515,38 @@ jobs:
 
 
       ########################################################################
+      # YARN CACHE SIZE
+      ########################################################################
+
+      - name: Analyze Yarn cache
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Yarn cache"
+          echo "========================================"
+
+          echo
+          echo "Total .yarn:"
+          du -sh .yarn
+
+          echo
+          echo "Cache:"
+          du -sh .yarn/cache 2>/dev/null || true
+
+          echo
+          echo "Cached files:"
+          find .yarn/cache -type f 2>/dev/null | wc -l
+
+          echo
+          echo "Largest cache entries:"
+          du -ah .yarn/cache 2>/dev/null \
+            | sort -h \
+            | tail -30 || true
+
+
+      ########################################################################
       # NATIVE ARTIFACTS
       ########################################################################
 
@@ -525,7 +619,7 @@ jobs:
           mkdir -p release
 
           # Copy the complete built working tree.
-          # Yarn PnP requires .yarn + .pnp.cjs + project metadata.
+          # Yarn PnP + offline operation requires the project-local cache.
           cp -a overleaf/. release/
 
           # Never ship GitHub/repository metadata.
@@ -551,6 +645,7 @@ jobs:
           test -f package.json
           test -f yarn.lock
           test -d .yarn
+          test -d .yarn/cache
 
           echo
           echo "Node:"
@@ -576,6 +671,10 @@ jobs:
             echo "ERROR: release is not configured for Yarn PnP"
             exit 1
           fi
+
+          echo
+          echo "Offline cache:"
+          du -sh .yarn/cache
 
 
       ########################################################################
@@ -609,7 +708,7 @@ jobs:
       ########################################################################
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
           path: |
