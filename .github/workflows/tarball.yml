@@ -1,144 +1,765 @@
-name: Create Overleaf tarball
+name: Build Overleaf tarball
 
 on:
-  schedule:
-    - cron: '0 15 * * 5'
   workflow_dispatch:
+    inputs:
+      commit:
+        description: "Overleaf commit"
+        required: false
+        default: ""
+      arch:
+        description: "CPU architecture (amd64,arm64)"
+        required: true
+        default: "amd64,arm64"
+
+  schedule:
+    - cron: "0 15 * * 5"
+
 
 jobs:
 
-##########################################################################
-# PREPARE
-##########################################################################
-  
+  ##########################################################################
+  # PREPARE
+  ##########################################################################
+
   prepare:
     runs-on: ubuntu-latest
+
     outputs:
-      should_build: ${{ steps.check-version.outputs.should_build }}
+      commit: ${{ steps.commit.outputs.commit }}
+      short_commit: ${{ steps.commit.outputs.short_commit }}
+      commit_date: ${{ steps.commit_date.outputs.commit_date }}
       version: ${{ steps.version.outputs.version }}
-      commit: ${{ steps.commit.outputs.commit_full }}
-    
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      should_build: ${{ steps.check-version.outputs.should_build }}
+      matrix_arch: ${{ steps.matrix.outputs.matrix_arch }}
 
     steps:
+
       - name: Get latest commit
         id: commit
+        shell: bash
         run: |
-          FULL=$(git ls-remote https://github.com/overleaf/overleaf.git HEAD | cut -f1)
-          SHORT=${FULL:0:7}
-          echo "commit_full=$FULL" >> $GITHUB_OUTPUT
-          echo "commit_short=$SHORT" >> $GITHUB_OUTPUT
-          
-      - name: Clone Overleaf
-        run: |
-          git clone https://github.com/overleaf/overleaf.git overleaf
-          cd overleaf
-          git checkout ${{ steps.commit.outputs.commit_full }}
+          set -euo pipefail
+
+          REQUESTED="${{ github.event.inputs.commit }}"
+
+          if [ -n "$REQUESTED" ]; then
+            COMMIT="$REQUESTED"
+          else
+            COMMIT=$(git ls-remote \
+              https://github.com/overleaf/overleaf.git \
+              HEAD \
+              | cut -f1)
+          fi
+
+          SHORT_COMMIT="${COMMIT:0:7}"
+
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "short_commit=$SHORT_COMMIT" >> "$GITHUB_OUTPUT"
+
+          echo "Overleaf commit: $COMMIT"
+          echo "Short commit:    $SHORT_COMMIT"
+
 
       - name: Get commit date
         id: commit_date
-        working-directory: overleaf
+        shell: bash
         run: |
-          COMMIT_DATE="$(git log -1 --format=%cd --date=format:%Y%m%d)"
-          echo "commit_date=$COMMIT_DATE" >> $GITHUB_OUTPUT
-        
+          set -euo pipefail
+
+          git init overleaf-meta
+          cd overleaf-meta
+
+          git remote add origin \
+            https://github.com/overleaf/overleaf.git
+
+          git fetch \
+            --quiet \
+            --depth=1 \
+            origin "${{ steps.commit.outputs.commit }}"
+
+          COMMIT_DATE=$(git show -s \
+            --format='%cd' \
+            --date=format:%Y%m%d \
+            "${{ steps.commit.outputs.commit }}")
+
+          echo "commit_date=$COMMIT_DATE" >> "$GITHUB_OUTPUT"
+
+          echo "Commit date: $COMMIT_DATE"
+
+
       - name: Define version
         id: version
+        shell: bash
         run: |
-          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit.outputs.commit_short }}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
 
-      - name: Check if tag already exists
+          VERSION="${{ steps.commit_date.outputs.commit_date }}-${{ steps.commit.outputs.short_commit }}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          echo "Build version: $VERSION"
+
+
+      - name: Check if release already exists
         id: check-version
         shell: bash
         run: |
+          set -euo pipefail
+
           TAG="${{ steps.version.outputs.version }}"
-            # Check in this repo if the tag is already created
-            echo "Tag $TAG already exists → skipping build"
-            if git ls-remote --tags https://github.com/${{ github.repository }} "$TAG" | grep -q "$TAG"; then
-            echo "should_build=false" >> $GITHUB_OUTPUT
+
+          if git ls-remote \
+              --exit-code \
+              --tags \
+              "https://github.com/${{ github.repository }}.git" \
+              "refs/tags/$TAG" \
+              >/dev/null 2>&1; then
+
+            echo "Release/tag $TAG already exists."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+
           else
-            echo "Tag $TAG not found → building"
-            echo "should_build=true" >> $GITHUB_OUTPUT
+
+            echo "Release/tag $TAG does not exist."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+
           fi
 
-      # Upload source artefact so we can reuse it in the build step
-      - name: Upload source artifact
+
+      - name: Build architecture matrix
+        id: matrix
         if: steps.check-version.outputs.should_build == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: overleaf-source
-          path: overleaf
-          include-hidden-files: true
-          
-##########################################################################
-# BUILD
-##########################################################################
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARCH="${{ github.event.inputs.arch }}"
+          else
+            ARCH="amd64,arm64"
+          fi
+
+          MATRIX=$(echo "$ARCH" | jq -R -s -c '
+            split(",")
+            | map(gsub("^\\s+|\\s+$"; ""))
+            | map(select(length > 0))
+          ')
+
+          echo "matrix_arch=$MATRIX" >> "$GITHUB_OUTPUT"
+
+          echo "Architectures: $MATRIX"
+
+
+  ##########################################################################
+  # BUILD
+  ##########################################################################
 
   build:
     needs: prepare
+
     if: needs.prepare.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        arch: ${{ fromJson(needs.prepare.outputs.matrix_arch) }}
+
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+
     permissions:
-      contents: write
-      
+      contents: read
+
     env:
-      COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
       CI: 1
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+      YARN_ENABLE_IMMUTABLE_INSTALLS: "false"
 
     steps:
-      # Download the prevous uploaded artifact
-      - name: Download source
-        uses: actions/download-artifact@v4
-        with:
-          name: overleaf-source
-          path: overleaf
 
-      - name: Setup Node
+      ########################################################################
+      # DEPENDENCIES
+      ########################################################################
+
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git \
+            curl \
+            ca-certificates \
+            build-essential \
+            python3 \
+            pkg-config \
+            jq \
+            tar \
+            gzip
+
+
+      ########################################################################
+      # SOURCE
+      ########################################################################
+
+      - name: Checkout Overleaf
+        run: |
+          set -euo pipefail
+
+          git clone \
+            --filter=blob:none \
+            https://github.com/overleaf/overleaf.git \
+            overleaf
+
+          cd overleaf
+
+          git checkout --detach \
+            "${{ needs.prepare.outputs.commit }}"
+
+          echo "Building Overleaf:"
+          git log -1 --oneline
+
+
+      ########################################################################
+      # NODE
+      ########################################################################
+
+      - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
 
-      - name: Enable Corepack
-        run: corepack enable
-          
-      - name: Install & compile via genScript.js
+
+      ########################################################################
+      # COREPACK / YARN
+      ########################################################################
+
+      - name: Setup Corepack and Yarn
         working-directory: overleaf
         env:
-          YARN_ENABLE_IMMUTABLE_INSTALLS: "false"
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
         run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Node.js"
+          echo "========================================"
+
+          node --version
+          npm --version
+
+
+          echo
+          echo "========================================"
+          echo "Overleaf package manager"
+          echo "========================================"
+
+          PACKAGE_MANAGER=$(node -p \
+            "require('./package.json').packageManager")
+
+          echo "packageManager: $PACKAGE_MANAGER"
+
+
+          echo
+          echo "========================================"
+          echo "Enable Corepack"
+          echo "========================================"
+
+          corepack enable
+
+
+          echo
+          echo "========================================"
+          echo "Install project package manager"
+          echo "========================================"
+
+          corepack install
+
+
+          echo
+          echo "========================================"
+          echo "Verify Yarn"
+          echo "========================================"
+
+          EXPECTED_YARN=$(node -p \
+            "require('./package.json').packageManager.replace(/^yarn@/, '')")
+
+          ACTUAL_YARN=$(yarn --version)
+          YARN_PATH=$(command -v yarn)
+
+          echo "Expected Yarn: $EXPECTED_YARN"
+          echo "Actual Yarn:   $ACTUAL_YARN"
+          echo "Yarn path:     $YARN_PATH"
+
+          if [ "$ACTUAL_YARN" != "$EXPECTED_YARN" ]; then
+            echo
+            echo "ERROR: incorrect Yarn version!"
+            echo "Expected: $EXPECTED_YARN"
+            echo "Actual:   $ACTUAL_YARN"
+            exit 1
+          fi
+
+
+          echo
+          echo "========================================"
+          echo "Yarn configuration"
+          echo "========================================"
+
+          NODE_LINKER=$(yarn config get nodeLinker)
+          ENABLE_GLOBAL_CACHE=$(yarn config get enableGlobalCache)
+
+          echo "nodeLinker:        $NODE_LINKER"
+          echo "enableGlobalCache: $ENABLE_GLOBAL_CACHE"
+
+          if [ "$NODE_LINKER" != "pnp" ]; then
+            echo "ERROR: expected nodeLinker=pnp"
+            exit 1
+          fi
+
+          echo
+          echo "Yarn version:"
+          yarn --version
+
+
+      ########################################################################
+      # ARCHITECTURE-SPECIFIC YARN CACHE
+      #
+      # Keep the Yarn cache for offline operation, but only fetch optional/
+      # native dependencies for the architecture of this tarball.
+      ########################################################################
+
+      - name: Configure target architecture for offline bundle
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
+          ARCH="${{ matrix.arch }}"
+
+          case "$ARCH" in
+            amd64)
+              CPU="x64"
+              ;;
+            arm64)
+              CPU="arm64"
+              ;;
+            *)
+              echo "ERROR: unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+
+          echo "========================================"
+          echo "Offline bundle architecture"
+          echo "========================================"
+
+          echo "Release architecture: $ARCH"
+          echo "Yarn CPU architecture: $CPU"
+          echo "OS:                    linux"
+          echo "libc:                  glibc"
+
+          #
+          # supportedArchitectures is at the end of the Overleaf .yarnrc.yml.
+          # Replace that section with a target-specific configuration.
+          #
+          sed -i '/^supportedArchitectures:/,$d' .yarnrc.yml
+
+          cat >> .yarnrc.yml <<EOF
+
+          supportedArchitectures:
+            cpu:
+              - $CPU
+            libc:
+              - glibc
+            os:
+              - linux
+          EOF
+
+          echo
+          echo "Effective supportedArchitectures:"
+          sed -n '/^supportedArchitectures:/,$p' .yarnrc.yml
+
+
+      ########################################################################
+      # BUILD ENVIRONMENT
+      ########################################################################
+
+      - name: Show build environment
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Build environment"
+          echo "========================================"
+
+          echo "Node:       $(node --version)"
+          echo "npm:        $(npm --version)"
+          echo "Yarn:       $(yarn --version)"
+          echo "Yarn path:  $(command -v yarn)"
+          echo "OS arch:    $(uname -m)"
+          echo "Node arch:  $(node -p 'process.arch')"
+
+          echo
+          echo "Yarn supported architectures:"
+          sed -n '/^supportedArchitectures:/,$p' .yarnrc.yml
+
+
+      ########################################################################
+      # BUILD
+      ########################################################################
+
+      - name: Install Overleaf dependencies
+        working-directory: overleaf
+        run: |
+          set -uo pipefail
+
+          echo "========================================"
+          echo "Installing Overleaf dependencies"
+          echo "========================================"
+
           node server-ce/genScript install | bash
+          status=$?
+
+          if [ "$status" -ne 0 ]; then
+            echo
+            echo "========================================"
+            echo "Yarn packing logs"
+            echo "========================================"
+
+            FOUND=0
+
+            while IFS= read -r logfile; do
+              FOUND=1
+
+              echo
+              echo "========================================"
+              echo "FILE: $logfile"
+              echo "========================================"
+
+              cat "$logfile"
+            done < <(find /tmp -type f -name 'pack.log' 2>/dev/null)
+
+            if [ "$FOUND" -eq 0 ]; then
+              echo "No pack.log files found."
+
+              echo
+              echo "Recent /tmp contents:"
+              find /tmp \
+                -maxdepth 3 \
+                -type f \
+                -print 2>/dev/null \
+                | sort \
+                | tail -200 || true
+            fi
+          fi
+
+          exit "$status"
+
+
+      - name: Compile Overleaf
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
           node server-ce/genScript compile | bash
 
-##########################################################################
-# PREPARE TARBALL
-##########################################################################
 
-      - name: Prepare release folder
+      ########################################################################
+      # VALIDATE BUILD
+      ########################################################################
+
+      - name: Validate PnP release
+        working-directory: overleaf
         run: |
-          mkdir -p release/services/
-          mkdir -p release/libraries/
-          mkdir -p release/node_modules/
-          mkdir -p release/server-ce/
-          
-          cp -r overleaf/services/* release/services/ 
-          cp -r overleaf/libraries/* release/libraries/ 
-          cp -r overleaf/node_modules/* release/node_modules/ 
-          cp -r overleaf/server-ce/* release/server-ce/
+          set -euo pipefail
 
-      - name: Compress tarball
+          echo "========================================"
+          echo "PnP release validation"
+          echo "========================================"
+
+          test -f .pnp.cjs
+          test -f .yarnrc.yml
+          test -f package.json
+          test -f yarn.lock
+          test -d .yarn
+
+          if [ -d node_modules ]; then
+            echo
+            echo "ERROR: node_modules exists."
+            echo "This build is expected to use Yarn PnP."
+            exit 1
+          fi
+
+          echo
+          echo "Yarn:"
+          yarn --version
+
+          echo
+          echo "nodeLinker:"
+          NODE_LINKER="$(yarn config get nodeLinker)"
+          echo "$NODE_LINKER"
+
+          if [ "$NODE_LINKER" != "pnp" ]; then
+            echo "ERROR: expected nodeLinker=pnp"
+            exit 1
+          fi
+
+          echo
+          echo "PnP loader:"
+          node -e "
+            require('./.pnp.cjs');
+            console.log('Yarn PnP loader: OK');
+          "
+
+
+      ########################################################################
+      # YARN CACHE SIZE
+      ########################################################################
+
+      - name: Analyze Yarn cache
+        working-directory: overleaf
         run: |
-          tar -czf overleaf_${{ needs.prepare.outputs.version }}.tar.gz release/
+          set -euo pipefail
 
-##########################################################################
-# RELEASE
-##########################################################################
+          echo "========================================"
+          echo "Yarn cache"
+          echo "========================================"
+
+          echo
+          echo "Total .yarn:"
+          du -sh .yarn
+
+          echo
+          echo "Cache:"
+          du -sh .yarn/cache 2>/dev/null || true
+
+          echo
+          echo "Cached files:"
+          find .yarn/cache -type f 2>/dev/null | wc -l
+
+          echo
+          echo "Largest cache entries:"
+          du -ah .yarn/cache 2>/dev/null \
+            | sort -h \
+            | tail -30 || true
+
+
+      ########################################################################
+      # NATIVE ARTIFACTS
+      ########################################################################
+
+      - name: Inspect native artifacts
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Native artifacts"
+          echo "========================================"
+
+          echo "Searching .yarn for native modules/binaries..."
+
+          find .yarn \
+            -type f \
+            \( \
+              -name '*.node' \
+              -o -name '*.so' \
+              -o -name '*.dylib' \
+              -o -perm -111 \
+            \) \
+            -print \
+            | head -200 || true
+
+
+      ########################################################################
+      # DISK USAGE
+      ########################################################################
+
+      - name: Show disk usage
+        working-directory: overleaf
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Disk usage"
+          echo "========================================"
+
+          echo
+          echo "Total:"
+          du -sh .
+
+          echo
+          echo ".yarn:"
+          du -sh .yarn
+
+          echo
+          echo "services:"
+          du -sh services 2>/dev/null || true
+
+          echo
+          echo "libraries:"
+          du -sh libraries 2>/dev/null || true
+
+          echo
+          echo "server-ce:"
+          du -sh server-ce 2>/dev/null || true
+
+
+      ########################################################################
+      # PACKAGE
+      ########################################################################
+
+      - name: Prepare release directory
+        run: |
+          set -euo pipefail
+
+          rm -rf release
+          mkdir -p release
+
+          # Copy the complete built working tree.
+          # Yarn PnP + offline operation requires the project-local cache.
+          cp -a overleaf/. release/
+
+          # Never ship GitHub/repository metadata.
+          rm -rf release/.git
+          rm -rf release/.github
+
+
+      ########################################################################
+      # TEST RELEASE DIRECTORY
+      ########################################################################
+
+      - name: Test release directory
+        working-directory: release
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Testing packaged release"
+          echo "========================================"
+
+          test -f .pnp.cjs
+          test -f .yarnrc.yml
+          test -f package.json
+          test -f yarn.lock
+          test -d .yarn
+          test -d .yarn/cache
+
+          echo
+          echo "Node:"
+          node --version
+
+          echo
+          echo "Yarn:"
+          yarn --version
+
+          echo
+          echo "PnP loader:"
+          node -e "
+            require('./.pnp.cjs');
+            console.log('Yarn PnP loader: OK');
+          "
+
+          echo
+          echo "nodeLinker:"
+          NODE_LINKER="$(yarn config get nodeLinker)"
+          echo "$NODE_LINKER"
+
+          if [ "$NODE_LINKER" != "pnp" ]; then
+            echo "ERROR: release is not configured for Yarn PnP"
+            exit 1
+          fi
+
+          echo
+          echo "Offline cache:"
+          du -sh .yarn/cache
+
+
+      ########################################################################
+      # CREATE TARBALL
+      ########################################################################
+
+      - name: Create tarball
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ needs.prepare.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+
+          TARBALL="overleaf-${VERSION}-${ARCH}.tar.gz"
+
+          tar \
+            --sort=name \
+            --mtime='UTC 1970-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -czf "$TARBALL" \
+            -C release .
+
+          echo "Created:"
+          ls -lh "$TARBALL"
+
+
+      ########################################################################
+      # ARTIFACT
+      ########################################################################
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
+          path: |
+            overleaf-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.tar.gz
+          retention-days: 1
+
+
+  ##########################################################################
+  # RELEASE
+  ##########################################################################
+
+  release:
+    needs:
+      - prepare
+      - build
+
+    if: needs.prepare.outputs.should_build == 'true'
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+
+      - name: List release files
+        run: |
+          set -euo pipefail
+
+          echo "========================================"
+          echo "Release files"
+          echo "========================================"
+
+          find artifacts \
+            -maxdepth 3 \
+            -type f \
+            -print \
+            | sort
+
 
       - name: Publish Release
-        uses: softprops/action-gh-release@v2.6.1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.version }}
-          name: Overleaf ${{ needs.prepare.outputs.version }}
-          files: overleaf_${{ needs.prepare.outputs.version }}.tar.gz
-        
+          name: "Overleaf ${{ needs.prepare.outputs.version }}"
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar.gz
